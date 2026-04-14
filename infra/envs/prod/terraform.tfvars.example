@@ -1,0 +1,9 @@
+aws_region            = "us-east-1"
+project_name          = "react-bluegreen"
+environment           = "prod"
+active_color          = "blue"
+blue_image_tag        = "latest"
+green_image_tag       = "latest"
+instance_type         = "t3.micro"
+blue_desired_capacity = 1
+green_desired_capacity = 0
