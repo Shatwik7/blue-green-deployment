@@ -20,7 +20,6 @@
 - `nginx/default.conf`: SPA-friendly Nginx routing and `/health` endpoint.
 - `infra/`: Terraform code.
 - `.gitlab-ci.yml`: CI/CD workflow.
-- `IMPLEMENTATION.md`: this guide.
 
 ## Terraform backend bootstrap
 
