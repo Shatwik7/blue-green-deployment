@@ -1,0 +1,90 @@
+stages:
+  - validate
+  - build
+  - deploy
+
+variables:
+  AWS_DEFAULT_REGION: "$AWS_REGION"
+  PROJECT_NAME: "react-bluegreen"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  BLUE_IMAGE_TAG: "latest"
+
+validate_frontend:
+  stage: validate
+  image: node:22-alpine
+  script:
+    - cd frontend
+    - npm ci
+    - npm run build
+
+build_and_push_image:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apk add --no-cache bash python3 py3-pip
+    - pip install awscli
+    - aws --version
+    - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+  script:
+    - IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_NAME:$CI_COMMIT_SHORT_SHA"
+    - docker build -t "$IMAGE_URI" .
+    - docker push "$IMAGE_URI"
+    - echo "GREEN_IMAGE_TAG=$CI_COMMIT_SHORT_SHA" >> deploy.env
+  artifacts:
+    reports:
+      dotenv: deploy.env
+
+terraform_deploy_green:
+  stage: deploy
+  image: hashicorp/terraform:1.9.8
+  needs:
+    - build_and_push_image
+  before_script:
+    - cd infra/envs/prod
+    - terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=prod/terraform.tfstate" -backend-config="region=$AWS_REGION" -backend-config="dynamodb_table=$TF_LOCK_TABLE" -backend-config="encrypt=true"
+  script:
+    - terraform apply -auto-approve -var="aws_region=$AWS_REGION" -var="project_name=$PROJECT_NAME" -var="environment=prod" -var="active_color=blue" -var="blue_desired_capacity=1" -var="green_desired_capacity=1" -var="blue_image_tag=$BLUE_IMAGE_TAG" -var="green_image_tag=$GREEN_IMAGE_TAG"
+
+terraform_switch_to_green:
+  stage: deploy
+  image: hashicorp/terraform:1.9.8
+  needs:
+    - build_and_push_image
+    - terraform_deploy_green
+  when: manual
+  before_script:
+    - cd infra/envs/prod
+    - terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=prod/terraform.tfstate" -backend-config="region=$AWS_REGION" -backend-config="dynamodb_table=$TF_LOCK_TABLE" -backend-config="encrypt=true"
+  script:
+    - terraform apply -auto-approve -var="aws_region=$AWS_REGION" -var="project_name=$PROJECT_NAME" -var="environment=prod" -var="active_color=green" -var="blue_desired_capacity=1" -var="green_desired_capacity=1" -var="blue_image_tag=$BLUE_IMAGE_TAG" -var="green_image_tag=$GREEN_IMAGE_TAG"
+
+terraform_decommission_blue:
+  stage: deploy
+  image: hashicorp/terraform:1.9.8
+  needs:
+    - build_and_push_image
+    - terraform_switch_to_green
+  when: manual
+  before_script:
+    - cd infra/envs/prod
+    - terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=prod/terraform.tfstate" -backend-config="region=$AWS_REGION" -backend-config="dynamodb_table=$TF_LOCK_TABLE" -backend-config="encrypt=true"
+  script:
+    - terraform apply -auto-approve -var="aws_region=$AWS_REGION" -var="project_name=$PROJECT_NAME" -var="environment=prod" -var="active_color=green" -var="blue_desired_capacity=0" -var="green_desired_capacity=1" -var="blue_image_tag=$BLUE_IMAGE_TAG" -var="green_image_tag=$GREEN_IMAGE_TAG"
+
+terraform_rollback_to_blue:
+  stage: deploy
+  image: hashicorp/terraform:1.9.8
+  needs:
+    - build_and_push_image
+    - terraform_switch_to_green
+  when: manual
+  before_script:
+    - cd infra/envs/prod
+    - terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=prod/terraform.tfstate" -backend-config="region=$AWS_REGION" -backend-config="dynamodb_table=$TF_LOCK_TABLE" -backend-config="encrypt=true"
+  script:
+    - terraform apply -auto-approve -var="aws_region=$AWS_REGION" -var="project_name=$PROJECT_NAME" -var="environment=prod" -var="active_color=blue" -var="blue_desired_capacity=1" -var="green_desired_capacity=1" -var="blue_image_tag=$BLUE_IMAGE_TAG" -var="green_image_tag=$GREEN_IMAGE_TAG"
